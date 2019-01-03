@@ -27,6 +27,7 @@ readn(conn,recvbuf.buf,n); writen(conn,&recvbuf,4+n);
 #include <signal.h>
 #include <sys/types.h>
 #include <sys/socket.h>
+#include <sys/wait.h>
 #include <netinet/in.h>
 #include <arpa/inet.h>
 #define ERR_EXIT(m) \
@@ -131,6 +132,8 @@ int main(){
 	struct sockaddr_in peeraddr;//对方地址
 	socklen_t peerlen = sizeof(peeraddr);//peerlen 要有初始值
 	int conn;//conn记录新返回的套接字 -已连接套接字-从已连接队列移除
+
+	/*
 	pid_t pid;//新建进程
 	while	(1){//开始操作
 		if ((conn = accept(listenfd,(struct sockaddr*)&peeraddr,&peerlen)) < 0)
@@ -149,6 +152,77 @@ int main(){
 			close(conn);
 		}
 	}
+	*/
+
+	int maxfd=listenfd;
+	fd_set rset,allset;
+	FD_ZERO(&rset);
+	FD_ZERO(&allset);
+	FD_SET(listenfd,&allset);
+	int client[FD_SETSIZE];
+	for(int i=0;i<FD_SETSIZE;i++){
+        client[i]=-1;
+	}
+	while(1){
+        rset=allset;
+        int nready=select(maxfd+1,&rset,NULL,NULL,NULL);
+        if(nready == -1) {
+            if(errno==EINTR) continue;
+            ERR_EXIT("select");
+        }
+        if(nready==0) continue;
+        if(FD_ISSET(listenfd,&rset)){//handle one conn
+           printf("select detect conn\n");
+           conn = accept(listenfd,(struct sockaddr*)&peeraddr,&peerlen);
+			//从ESTABLISHED队列里返回第一个连接
+           if(conn==-1) ERR_EXIT("accept");
+           int i;
+           for(i=0;i<FD_SETSIZE;i++){
+             if(client[i]<0){
+                client[i]=conn;//put a conn into array
+                break;
+             }
+            }
+            if(i==FD_SETSIZE){
+                printf("too many conn\n");
+           }
+
+           printf("和客户端%d,IP:%s::%d已进行三次握手\n",conn,inet_ntoa(peeraddr.sin_addr),htons(peeraddr.sin_port));
+           FD_SET(conn,&allset);
+           if(conn>maxfd) maxfd=conn;
+           if(--nready<=0) continue;//all the conn has been handlded
+        }
+        for(int i=0;i<FD_SETSIZE;i++){
+            conn=client[i];
+            if(conn==-1) continue;
+            if(FD_ISSET(conn,&rset)){//receve data
+                printf("select decect message\n");
+                struct packet recvbuf;//接收消息队列
+                int ret = readn(conn,&recvbuf.len,4);//先接收4字节
+                if (ret == -1) ERR_EXIT("read");
+                else if(ret<4){
+                    printf("客户端%d关闭\n",conn);
+                    FD_CLR(conn,&allset);
+                    break;
+                }
+                int n=ntohl(recvbuf.len);//len是网络字节序，转换成主机字节序
+                ret=readn(conn,recvbuf.buf,n);
+                if (ret == -1) ERR_EXIT("read");
+                else if(ret<4){
+                    printf("客户端%d关闭\n",conn);
+                    FD_CLR(conn,&allset);
+                    break;
+                }
+                printf("收：");
+                fputs(recvbuf.buf,stdout);//输出到屏幕
+                writen(conn,&recvbuf,4+n);//回射回去
+                memset(&recvbuf,0,sizeof(recvbuf));
+                if(--nready<=0) continue;//all the message has handled
+
+            }
+        }
+	}
+
 	return 0;
 }
 
