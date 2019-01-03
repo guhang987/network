@@ -72,20 +72,20 @@ void echo_client(int sock){
         int maxfd=fd_stdin>sock?fd_stdin:sock;
         int nready;//ready things number
         while(1){
-            FD_SET(fd_stdin,&ret);
+            FD_SET(fd_stdin,&ret);//
             FD_SET(sock,&ret);
             nready=select(maxfd+1,&ret,NULL,NULL,NULL);
             if(nready==-1) ERR_EXIT("select");
             if(nready==0) continue;
-            if(FD_ISSET(sock,&ret)){
-                printf("select() detect sock\n");
+            if(FD_ISSET(sock,&ret)){//检测到服务器的消息
+                printf("select() 检测到服务器的可读事件\n");
                 int ret = readn(sock,&recvbuf.len,4);//先接收4字节
                 if (ret == -1) ERR_EXIT("read");
                 else if(ret<4){
                     printf("客户端%d关闭\n",sock);
                     break;
                 }
-                printf("收：");
+                printf("服务器说：");
                 int n=ntohl(recvbuf.len);//len是网络字节序，转换成主机字节序
                 ret=readn(sock,recvbuf.buf,n);
                 if (ret == -1) ERR_EXIT("read");
@@ -94,14 +94,14 @@ void echo_client(int sock){
                     printf("server%d关闭\n",sock);
                     break;
                 }
-                fputs(recvbuf.buf,stdout);//输出到屏幕//从套接字读取字符串，放到recvbuf
+                fputs(recvbuf.buf,stdout);//输出到屏幕
                 memset(&recvbuf,0,sizeof(recvbuf));
             }
-            if(FD_ISSET(fd_stdin,&ret)){
-                printf("select() detect stdin\n");
+            if(FD_ISSET(fd_stdin,&ret)){//检测到屏幕有输入
+                printf("select() 检测到屏幕有输入\n");
                 if(fgets(sendbuf.buf,sizeof(sendbuf.buf),stdin)==NULL) break;
                 int n=strlen(sendbuf.buf);
-                printf("sendbuf.len=%d sendbuf.buf=%s\n",n,sendbuf.buf);
+                printf("发生长度为%d 发送内容为%s\n",n,sendbuf.buf);
                 sendbuf.len=htonl(n);//换成网络字节序
                 writen (sock,&sendbuf,4+n);//senbbuf写入套接字 包头四字节
                 memset(&sendbuf,0,sizeof(sendbuf));

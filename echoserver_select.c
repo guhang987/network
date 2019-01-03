@@ -80,29 +80,6 @@ ssize_t writen(int fd,void *buf,size_t count){
 	}
 return count;//nleft为0  都写完了 返回
 }
-void echo_server(int conn){//开始接客
-	struct packet recvbuf;//接收消息队列
-	while(1){
-		memset(&recvbuf,0,sizeof(recvbuf));//初始化数组
-		int ret = readn(conn,&recvbuf.len,4);//先接收4字节
-		if (ret == -1) ERR_EXIT("read");
-		else if(ret<4){
-			printf("客户端%d关闭\n",conn);
-			break;
-		}
-		int n=ntohl(recvbuf.len);//len是网络字节序，转换成主机字节序
-		ret=readn(conn,recvbuf.buf,n);
-		if (ret == -1) ERR_EXIT("read");
-		else if(ret<4){
-			printf("客户端%d关闭\n",conn);
-			break;
-		}
-		printf("收：");
-		fputs(recvbuf.buf,stdout);//输出到屏幕
-		writen(conn,&recvbuf,4+n);//回射回去
-	}
-
-}
 void handle_sigchld(int sig){
     while(waitpid(-1,NULL,WNOHANG)>0);//wait all child process
 }
@@ -117,7 +94,7 @@ int main(){
 	memset(&servaddr,0,sizeof(servaddr));//用0填充
 	servaddr.sin_family = AF_INET;
 	servaddr.sin_port = htons(7777);
-	servaddr.sin_addr.s_addr = htonl(INADDR_ANY);//任意本机地址
+	servaddr.sin_addr.s_addr = htonl(INADDR_ANY);//任意本机地址,方法1
 	//inet_aton("127.0.0.1",&servaddr.sin_addr);//方法2
 	//servaddr.sin_addr.s_addr = inet_addr("127.0.0.1");//方法3
 	int on = 1;
@@ -133,96 +110,75 @@ int main(){
 	socklen_t peerlen = sizeof(peeraddr);//peerlen 要有初始值
 	int conn;//conn记录新返回的套接字 -已连接套接字-从已连接队列移除
 
-	/*
-	pid_t pid;//新建进程
-	while	(1){//开始操作
-		if ((conn = accept(listenfd,(struct sockaddr*)&peeraddr,&peerlen)) < 0)
-			ERR_EXIT("accept");//从ESTABLISHED队列里返回第一个连接 空则阻塞
-		printf("和客户端%d,IP:%s::%d已进行三次握手\n",conn,inet_ntoa(peeraddr.sin_addr),htons(peeraddr.sin_port));
-		pid=fork();
-		if(pid == -1){
-			ERR_EXIT("fork");//新建子进程失败 退出主进程
-		}
-		if(pid == 0){
-			printf("新建子进程:%d\n",getpid());
-			close(listenfd);
-			echo_server(conn);
-			exit(EXIT_SUCCESS);//一旦客户端实例关闭了 这个处理的进程就没有存在的价值 要退出 否则子进程也会去accept
-		}else{
-			close(conn);
-		}
-	}
-	*/
-
-	int maxfd=listenfd;
+	int maxfd=listenfd;//最大套接字描述符
 	fd_set rset,allset;
 	FD_ZERO(&rset);
-	FD_ZERO(&allset);
+	FD_ZERO(&allset);//要管理的所有套接字，包括listenfd 每个客户端的conn
 	FD_SET(listenfd,&allset);
-	int client[FD_SETSIZE];
+	int client[FD_SETSIZE];//client数组表示目前连接上的客户端，-1表示空，其他数字代表客户端编号（套接字）
 	for(int i=0;i<FD_SETSIZE;i++){
-        client[i]=-1;
+        client[i]=-1;//初始化为-1
 	}
-	while(1){
-        rset=allset;
-        int nready=select(maxfd+1,&rset,NULL,NULL,NULL);
+	while(1){//主处理程序
+        rset=allset;//allset每次添加了conn 赋值给rset来监听 不是很懂
+        int nready=select(maxfd+1,&rset,NULL,NULL,NULL);//开始探路
         if(nready == -1) {
-            if(errno==EINTR) continue;
-            ERR_EXIT("select");
+            if(errno==EINTR) continue;//EINTR信号可以忽略
+            ERR_EXIT("select");//其他问题导致select出错
         }
-        if(nready==0) continue;
-        if(FD_ISSET(listenfd,&rset)){//handle one conn
-           printf("select detect conn\n");
+        if(nready==0) continue;//未检测到任何待处理套接字，就回到开始
+        if(FD_ISSET(listenfd,&rset)){//检测到了，是不是listenfd,有连接过来了？
+           printf("select 检测到listenfd不为空\n");
            conn = accept(listenfd,(struct sockaddr*)&peeraddr,&peerlen);
-			//从ESTABLISHED队列里返回第一个连接
+			//这个时候调用accept就不可能阻塞了，然后从ESTABLISHED队列里返回第一个连接
            if(conn==-1) ERR_EXIT("accept");
            int i;
            for(i=0;i<FD_SETSIZE;i++){
-             if(client[i]<0){
-                client[i]=conn;//put a conn into array
-                break;
+             if(client[i]<0){//如果client数组里住了一个客户端，就不等于-1，找下一个为-1的元素
+                client[i]=conn;//存放一个连接到客户端列表数组中
+                break;//跳出for循环
              }
             }
-            if(i==FD_SETSIZE){
-                printf("too many conn\n");
+            if(i==FD_SETSIZE){//一直往后找，找到最大值了（这个最大值怎么看？）
+                printf("too many conn\n");//说明连接已满
            }
-
            printf("和客户端%d,IP:%s::%d已进行三次握手\n",conn,inet_ntoa(peeraddr.sin_addr),htons(peeraddr.sin_port));
-           FD_SET(conn,&allset);
+           FD_SET(conn,&allset);//放到allset里同时更新最大fd
            if(conn>maxfd) maxfd=conn;
-           if(--nready<=0) continue;//all the conn has been handlded
+           if(--nready<=0) continue;/*已经处理了一个套接字，nready--，如果小于0 说明没有需要处理的，回到开头；如果
+		   大于0 说明还有别的conn */
         }
-        for(int i=0;i<FD_SETSIZE;i++){
+        for(int i=0;i<FD_SETSIZE;i++){//现在确定conn有响应了（消息到来）,但是这么多conn，我不知道是哪个啊，所以遍历
             conn=client[i];
-            if(conn==-1) continue;
-            if(FD_ISSET(conn,&rset)){//receve data
-                printf("select decect message\n");
+            if(conn==-1) continue;//这个是空的 就再往后找
+            if(FD_ISSET(conn,&rset)){//找到一个不为空，而且这个conn确实有消息到来了
+                printf("select 检测到%d号已连接套接字有消息到来\n",conn);
                 struct packet recvbuf;//接收消息队列
                 int ret = readn(conn,&recvbuf.len,4);//先接收4字节
                 if (ret == -1) ERR_EXIT("read");
                 else if(ret<4){
                     printf("客户端%d关闭\n",conn);
-                    FD_CLR(conn,&allset);
+                    FD_CLR(conn,&allset);//移除一个conn
                     break;
                 }
                 int n=ntohl(recvbuf.len);//len是网络字节序，转换成主机字节序
-                ret=readn(conn,recvbuf.buf,n);
+                ret=readn(conn,recvbuf.buf,n);//再接收n字节
                 if (ret == -1) ERR_EXIT("read");
                 else if(ret<4){
                     printf("客户端%d关闭\n",conn);
                     FD_CLR(conn,&allset);
                     break;
                 }
-                printf("收：");
+                printf("%d号套接字说：",conn);
                 fputs(recvbuf.buf,stdout);//输出到屏幕
+				strcat(recvbuf.buf, "  received");
                 writen(conn,&recvbuf,4+n);//回射回去
                 memset(&recvbuf,0,sizeof(recvbuf));
-                if(--nready<=0) continue;//all the message has handled
-
+                if(--nready<=0) continue;//处理完一个conn了 nready减一，如果小于0都处理完了，返回select，
+				//否则说明还有conn没处理 返回for循环
             }
         }
 	}
-
 	return 0;
 }
 
